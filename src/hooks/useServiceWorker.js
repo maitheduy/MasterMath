@@ -16,7 +16,7 @@ export function useServiceWorker() {
       return;
     }
 
-    navigator.serviceWorker.register('/sw.js')
+    navigator.serviceWorker.register('/MasterMath/sw.js')
       .then((reg) => {
         console.log('[MasterMath] Service worker registered');
         setRegistration(reg);

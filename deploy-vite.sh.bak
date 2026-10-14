@@ -1,0 +1,307 @@
+cat > deploy-vite.sh <<'EOF'
+#!/bin/bash
+
+set -euo pipefail
+
+# ============================================================
+# MasterMath — Vite Deployment Script v3.2
+# React + Vite → GitHub → Release → GitHub Pages
+# ============================================================
+
+SOURCE_DIR="$(pwd)"
+ORIGIN_URL="$(git remote get-url origin)"
+
+echo ""
+echo "============================================================"
+echo "🚀 MasterMath — deploy-vite.sh v3.2"
+echo "============================================================"
+echo ""
+
+# ------------------------------------------------------------
+# 1. Check required commands
+# ------------------------------------------------------------
+
+for cmd in git gh npm; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "❌ Thiếu lệnh: $cmd"
+        exit 1
+    fi
+done
+
+# ------------------------------------------------------------
+# 2. Check GitHub authentication
+# ------------------------------------------------------------
+
+if ! gh auth status >/dev/null 2>&1; then
+    echo "❌ GitHub CLI chưa đăng nhập."
+    echo "👉 Chạy: gh auth login"
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# 3. Read repository information from origin
+# ------------------------------------------------------------
+
+REPO_PATH="$(echo "$ORIGIN_URL" | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')"
+
+GITHUB_USER="${REPO_PATH%%/*}"
+REPO_NAME="${REPO_PATH##*/}"
+
+REPO_URL="https://github.com/${GITHUB_USER}/${REPO_NAME}"
+APP_URL="https://${GITHUB_USER}.github.io/${REPO_NAME}/"
+FORK_URL="https://github.com/${GITHUB_USER}/${REPO_NAME}/fork"
+RELEASE_URL="https://github.com/${GITHUB_USER}/${REPO_NAME}/releases"
+
+echo "📦 Repository : ${GITHUB_USER}/${REPO_NAME}"
+echo "🌐 App        : ${APP_URL}"
+echo ""
+
+# ------------------------------------------------------------
+# 4. Check project files
+# ------------------------------------------------------------
+
+for file in package.json vite.config.js; do
+    if [ ! -f "$file" ]; then
+        echo "❌ Không tìm thấy $file"
+        exit 1
+    fi
+done
+
+# ------------------------------------------------------------
+# 5. Check Vite base path
+# ------------------------------------------------------------
+
+if ! grep -Eq "base:[[:space:]]*['\"]/$(printf '%s' "$REPO_NAME")/['\"]" vite.config.js; then
+    echo "❌ vite.config.js chưa có base: '/${REPO_NAME}/'"
+    echo ""
+    echo "👉 Hãy sửa vite.config.js trước khi deploy."
+    exit 1
+fi
+
+echo "✅ Vite base path: /${REPO_NAME}/"
+
+# ------------------------------------------------------------
+# 6. Install dependencies
+# ------------------------------------------------------------
+
+echo ""
+echo "📦 Kiểm tra dependencies..."
+npm install
+
+# ------------------------------------------------------------
+# 7. Build
+# ------------------------------------------------------------
+
+echo ""
+echo "🔨 Building production..."
+npm run build
+
+if [ ! -f "dist/index.html" ]; then
+    echo "❌ Build thất bại: không có dist/index.html"
+    exit 1
+fi
+
+echo "✅ Build thành công."
+
+# ------------------------------------------------------------
+# 8. BrowserRouter → GitHub Pages fallback
+# ------------------------------------------------------------
+
+if grep -Rqs "BrowserRouter" src 2>/dev/null; then
+    cp dist/index.html dist/404.html
+    echo "✅ BrowserRouter: đã tạo dist/404.html"
+fi
+
+# ------------------------------------------------------------
+# 9. Verify Service Worker
+# ------------------------------------------------------------
+
+if [ -f "src/hooks/useServiceWorker.js" ]; then
+    if grep -q "/${REPO_NAME}/sw.js" src/hooks/useServiceWorker.js; then
+        echo "✅ Service Worker path: /${REPO_NAME}/sw.js"
+    else
+        echo "⚠️ Cảnh báo: Service Worker chưa dùng /${REPO_NAME}/sw.js"
+    fi
+fi
+
+# ------------------------------------------------------------
+# 10. Determine next version
+# ------------------------------------------------------------
+
+LATEST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n 1 || true)"
+
+if [ -z "$LATEST_TAG" ]; then
+    VERSION="v1.0.0"
+else
+    VERSION="$(echo "$LATEST_TAG" | sed 's/^v//')"
+
+    IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+    PATCH=$((PATCH + 1))
+    VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+fi
+
+echo ""
+echo "🏷️  Version mới: ${VERSION}"
+
+# ------------------------------------------------------------
+# 11. Commit source changes
+# ------------------------------------------------------------
+
+git add -A
+
+if git diff --cached --quiet; then
+    echo "ℹ️ Không có source changes mới."
+else
+    git commit -m "deploy: ${VERSION}"
+    echo "✅ Source committed."
+fi
+
+# ------------------------------------------------------------
+# 12. Push main
+# ------------------------------------------------------------
+
+echo ""
+echo "⬆️ Push main..."
+git push origin main
+
+# ------------------------------------------------------------
+# 13. Create tag
+# ------------------------------------------------------------
+
+if git rev-parse "$VERSION" >/dev/null 2>&1; then
+    echo "⚠️ Tag ${VERSION} đã tồn tại."
+else
+    git tag -a "$VERSION" -m "Release ${VERSION}"
+    git push origin "$VERSION"
+    echo "✅ Tag ${VERSION} created."
+fi
+
+# ------------------------------------------------------------
+# 14. GitHub Release
+# ------------------------------------------------------------
+
+if gh release view "$VERSION" >/dev/null 2>&1; then
+    echo "ℹ️ Release ${VERSION} đã tồn tại."
+else
+    gh release create "$VERSION" \
+        --title "MasterMath ${VERSION}" \
+        --generate-notes
+    echo "✅ GitHub Release created."
+fi
+
+# ------------------------------------------------------------
+# 15. Deploy dist → gh-pages
+# ------------------------------------------------------------
+
+echo ""
+echo "🌐 Deploying dist → gh-pages..."
+
+DEPLOY_DIR="$(mktemp -d)"
+
+cleanup() {
+    cd "$SOURCE_DIR"
+    rm -rf "$DEPLOY_DIR"
+}
+
+trap cleanup EXIT
+
+git clone --quiet "$ORIGIN_URL" "$DEPLOY_DIR"
+
+cd "$DEPLOY_DIR"
+
+if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+    echo "ℹ️ Đã có gh-pages."
+
+    git fetch origin gh-pages --quiet
+    git checkout -B gh-pages origin/gh-pages
+else
+    echo "ℹ️ Chưa có gh-pages → tạo branch mới."
+
+    git checkout --orphan gh-pages
+    git rm -rf . >/dev/null 2>&1 || true
+fi
+
+# Xóa nội dung cũ nhưng giữ .git
+find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+
+# Copy production build
+cp -R "$SOURCE_DIR/dist/." .
+
+# GitHub Pages / Jekyll
+touch .nojekyll
+
+git add -A
+
+if git diff --cached --quiet; then
+    echo "ℹ️ gh-pages không có thay đổi."
+else
+    git commit -m "deploy: ${VERSION}"
+    git push origin gh-pages
+    echo "✅ gh-pages deployed."
+fi
+
+# ------------------------------------------------------------
+# 16. Configure GitHub Pages
+# ------------------------------------------------------------
+
+cd "$SOURCE_DIR"
+
+echo ""
+echo "⚙️ Kiểm tra GitHub Pages..."
+
+if gh api "repos/${GITHUB_USER}/${REPO_NAME}/pages" >/dev/null 2>&1; then
+    echo "✅ GitHub Pages đã được cấu hình."
+else
+    echo "🔧 Đang bật GitHub Pages..."
+
+    gh api \
+        --method POST \
+        "repos/${GITHUB_USER}/${REPO_NAME}/pages" \
+        -f "source[branch]=gh-pages" \
+        -f "source[path]=/" \
+        >/dev/null
+
+    echo "✅ GitHub Pages đã được bật."
+fi
+
+# ------------------------------------------------------------
+# 17. Verify gh-pages
+# ------------------------------------------------------------
+
+if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+    echo "✅ Remote branch gh-pages tồn tại."
+else
+    echo "❌ Không tìm thấy remote gh-pages."
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# 18. Final result
+# ------------------------------------------------------------
+
+echo ""
+echo "============================================================"
+echo "🎉 DEPLOY THÀNH CÔNG"
+echo "============================================================"
+echo ""
+echo "📦 Repository:"
+echo "   ${REPO_URL}"
+echo ""
+echo "🌐 Application:"
+echo "   ${APP_URL}"
+echo ""
+echo "🍴 Fork:"
+echo "   ${FORK_URL}"
+echo ""
+echo "🏷️ Release:"
+echo "   ${RELEASE_URL}"
+echo ""
+echo "📌 Version:"
+echo "   ${VERSION}"
+echo ""
+echo "============================================================"
+echo "✅ MasterMath đã sẵn sàng trên GitHub Pages."
+echo "============================================================"
+echo ""
+EOF

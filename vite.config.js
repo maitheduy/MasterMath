@@ -44,7 +44,7 @@ function stampServiceWorker() {
             .readdirSync(assetsDir)
             .filter((f) => /\.(js|css|woff2)$/.test(f))
             .sort()
-            .map((f) => `/assets/${f}`)
+            .map((f) => `/MasterMath/assets/${f}`)
         : []
 
       const stamped = fs
@@ -102,6 +102,7 @@ const CHUNK_GROUPS = [
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  base: '/MasterMath/',
   plugins: [react(), stampServiceWorker()],
   server: {
     // Honor an externally assigned port (e.g. when 5173 is already in use).
